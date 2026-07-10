@@ -26,6 +26,7 @@ export type AgentChatTransportEvent<ChatMessage extends UIMessage = UIMessage> =
   | { type: "message-updated"; message: ChatMessage }
   | { type: "chat-recovering"; recovering: boolean; id?: string }
   | { type: "broadcast-resume"; streamId: string }
+  | { type: "resume-none" }
   | { type: "replay-hydrated-reset"; messageId: string }
   | {
       type: "broadcast-response";
@@ -568,6 +569,7 @@ export class AgentChatTransport<
 
       case MessageType.CF_AGENT_STREAM_RESUME_NONE:
         this.#pendingResume?.none();
+        this.#onEvent?.({ type: "resume-none" });
         break;
 
       case MessageType.CF_AGENT_STREAM_RESUMING:
@@ -785,6 +787,17 @@ export class AgentChatTransport<
 
   #sendResumeAck(id: string): void {
     this.#send({ type: MessageType.CF_AGENT_STREAM_RESUME_ACK, id });
+  }
+
+  // Ask the server for the authoritative state of one tracked stream. The
+  // server answers a RESUME_ACK with a replay that ends in done/error when
+  // the stream has finished, or replayComplete when it is still live.
+  probeServerStream(requestId: string): void {
+    try {
+      this.#sendResumeAck(requestId);
+    } catch {
+      // WebSocket may already be closed; the next resume cycle re-probes.
+    }
   }
 
   #send(payload: Record<string, unknown>): void {

@@ -2326,6 +2326,159 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isBusy).toBe(false);
   });
 
+  it("probes tracked server streams on resume-none and settles a finished one", async () => {
+    const mock = createMockAgent();
+    const chat = makeChat(mock, { resume: true });
+    await waitForChatInitialized(chat);
+
+    mock.dispatchServerMessage({ type: MessageType.CF_AGENT_STREAM_RESUME_NONE });
+    flushSync();
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_STREAM_RESUMING,
+      id: "stream-1",
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(true);
+
+    const acksBefore = mock.sentMessages.filter(
+      (m) => m.type === MessageType.CF_AGENT_STREAM_RESUME_ACK && m.id === "stream-1",
+    ).length;
+
+    // A later resume request (e.g. after a reconnect) answered with
+    // RESUME_NONE does not by itself prove the tracked id is stale — the
+    // chat probes it with a RESUME_ACK and lets the server's reply decide.
+    mock.dispatchServerMessage({ type: MessageType.CF_AGENT_STREAM_RESUME_NONE });
+    flushSync();
+
+    const acksAfter = mock.sentMessages.filter(
+      (m) => m.type === MessageType.CF_AGENT_STREAM_RESUME_ACK && m.id === "stream-1",
+    ).length;
+    expect(acksAfter).toBe(acksBefore + 1);
+    expect(chat.isServerStreaming).toBe(true);
+
+    // The stream finished while we were disconnected: the server answers the
+    // probe with a replay ending in done, which settles the bookkeeping.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-1",
+      body: "",
+      done: true,
+      replay: true,
+    });
+    flushSync();
+
+    expect(chat.isServerStreaming).toBe(false);
+    expect(chat.activity).toEqual({ kind: "idle" });
+    expect(chat.isBusy).toBe(false);
+  });
+
+  it("keeps a tracked stream busy when the probe reveals it is still live", async () => {
+    const mock = createMockAgent();
+    const chat = makeChat(mock, { resume: true });
+    await waitForChatInitialized(chat);
+
+    mock.dispatchServerMessage({ type: MessageType.CF_AGENT_STREAM_RESUME_NONE });
+    flushSync();
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_STREAM_RESUMING,
+      id: "stream-1",
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(true);
+
+    // RESUME_NONE can arrive while a stream is active when its continuation
+    // is owned by another present connection (observer tab). The probe's
+    // replayComplete answer means "still live" — the id must stay tracked so
+    // this tab's composer stays busy.
+    mock.dispatchServerMessage({ type: MessageType.CF_AGENT_STREAM_RESUME_NONE });
+    flushSync();
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-1",
+      body: "",
+      done: false,
+      replay: true,
+      replayComplete: true,
+    });
+    flushSync();
+
+    expect(chat.isServerStreaming).toBe(true);
+    expect(chat.isBusy).toBe(true);
+  });
+
+  it("re-probes an unanswered stale stream after the active stream terminates", async () => {
+    const mock = createMockAgent();
+    const chat = makeChat(mock);
+    await waitForChatInitialized(chat);
+
+    const acksFor = (streamId: string) =>
+      mock.sentMessages.filter(
+        (m) => m.type === MessageType.CF_AGENT_STREAM_RESUME_ACK && m.id === streamId,
+      ).length;
+
+    // Stale stream S: tracked via a live chunk, then observation moves on to
+    // live stream T through a continuation turn.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-s",
+      body: JSON.stringify({ type: "start", messageId: "asst-s" }),
+      done: false,
+    });
+    flushSync();
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-t",
+      body: JSON.stringify({ type: "start", messageId: "asst-t" }),
+      done: false,
+      continuation: true,
+    });
+    flushSync();
+    expect(chat.activity).toMatchObject({ kind: "streaming", source: "server" });
+
+    // Both ids get probed on resume-none.
+    mock.dispatchServerMessage({ type: MessageType.CF_AGENT_STREAM_RESUME_NONE });
+    flushSync();
+    expect(acksFor("stream-s")).toBe(1);
+    expect(acksFor("stream-t")).toBe(1);
+
+    // handleResumeAck answers only the ACTIVE stream's probe; the stale
+    // probe is silently ignored while another stream is active.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-t",
+      body: "",
+      done: false,
+      replay: true,
+      replayComplete: true,
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(true);
+
+    // When T terminates, the unanswered probe for S is retried — the server
+    // is now guaranteed to answer it.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-t",
+      body: "",
+      done: true,
+    });
+    flushSync();
+    expect(acksFor("stream-s")).toBe(2);
+    expect(chat.isServerStreaming).toBe(true);
+
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-s",
+      body: "",
+      done: true,
+      replay: true,
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(false);
+    expect(chat.activity).toEqual({ kind: "idle" });
+    expect(chat.isBusy).toBe(false);
+  });
+
   it("keeps recovery busy but separate from streaming", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock);

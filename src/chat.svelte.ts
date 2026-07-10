@@ -676,7 +676,36 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
       });
   }
 
+  readonly #pendingServerStreamProbes = new Set<string>();
+
+  #probeServerStreams(streamIds: readonly string[]): void {
+    for (const streamId of streamIds) {
+      this.#pendingServerStreamProbes.add(streamId);
+      this.#transport.probeServerStream(streamId);
+    }
+  }
+
+  // handleResumeAck deliberately sends no response for a probed id while a
+  // DIFFERENT stream is active, so a probe can go unanswered. Once any stream
+  // terminates the server is guaranteed to answer, so retry the survivors.
+  #reprobePendingServerStreams(settledStreamId: string): void {
+    this.#pendingServerStreamProbes.delete(settledStreamId);
+    if (this.#pendingServerStreamProbes.size === 0) {
+      return;
+    }
+    const retry: string[] = [];
+    for (const streamId of [...this.#pendingServerStreamProbes]) {
+      if (this.#serverStreamIds.includes(streamId)) {
+        retry.push(streamId);
+      } else {
+        this.#pendingServerStreamProbes.delete(streamId);
+      }
+    }
+    this.#probeServerStreams(retry);
+  }
+
   #resetStreamState(): void {
+    this.#pendingServerStreamProbes.clear();
     this.#streamState.current = { status: "idle" } as BroadcastStreamState;
     this.#continuationStreamsSeeded.clear();
     this.#observedBroadcastResumes.clear();
@@ -1301,7 +1330,18 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
         this.#addServerStream(event.streamId);
         break;
 
+      case "resume-none":
+        // "No streams to resume for this connection" does not prove tracked
+        // ids are stale: an active stream's continuation can be owned by
+        // another still-present connection. Probe each tracked id with a
+        // RESUME_ACK instead — the server replies per stream with a replay
+        // ending in done/error (finished, so the terminal settle path above
+        // releases it) or replayComplete (still live, so it stays tracked).
+        this.#probeServerStreams(this.#serverStreamIds);
+        break;
+
       case "broadcast-response": {
+        this.#pendingServerStreamProbes.delete(event.streamId);
         if (
           event.replay &&
           this.#streamState.current.status !== "observing" &&
@@ -1317,6 +1357,7 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
             this.#removeServerStream(event.streamId);
             this.#clearRecoveryForTerminalStream(event.streamId);
             this.#continuationStreamsSeeded.delete(event.streamId);
+            this.#reprobePendingServerStreams(event.streamId);
           }
           return;
         }
@@ -1358,6 +1399,9 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
         if (event.done || event.replayComplete || event.error) {
           this.#continuationStreamsSeeded.delete(event.streamId);
           this.#observedBroadcastResumes.delete(event.streamId);
+        }
+        if (event.done || event.error) {
+          this.#reprobePendingServerStreams(event.streamId);
         }
         break;
       }
