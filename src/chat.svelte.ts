@@ -1307,6 +1307,17 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
           this.#streamState.current.status !== "observing" &&
           !this.#observedBroadcastResumes.has(event.streamId)
         ) {
+          // The stream may already be tracked from before a reconnect, so a
+          // terminal frame must still settle its bookkeeping even though the
+          // replayed content is ignored — otherwise the id stays in
+          // #serverStreamIds and activity reports "streaming" forever.
+          if (event.done || event.error || event.replayComplete) {
+            this.#removeServerStream(event.streamId);
+            if (event.done || event.error) {
+              this.#clearRecoveryForTerminalStream(event.streamId);
+            }
+            this.#continuationStreamsSeeded.delete(event.streamId);
+          }
           return;
         }
 

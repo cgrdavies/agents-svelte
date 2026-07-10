@@ -2235,6 +2235,48 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isStreaming).toBe(true);
   });
 
+  it("settles server-stream bookkeeping when a terminal frame arrives as an unobserved replay", async () => {
+    const mock = createMockAgent();
+    const chat = makeChat(mock);
+    await waitForChatInitialized(chat);
+
+    // A live broadcast chunk tracks the stream without a broadcast-resume.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-a",
+      body: JSON.stringify({ type: "start", messageId: "asst-a" }),
+      done: false,
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(true);
+
+    // An unrelated continuation turn resets the broadcast observation state.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-b",
+      body: JSON.stringify({ type: "text-delta", id: "t1", delta: "done" }),
+      done: true,
+      continuation: true,
+    });
+    flushSync();
+
+    // The tracked stream's terminal frame arrives late, as a replay the chat
+    // is no longer observing. Its content is ignored, but the stream must
+    // still be released or activity stays "streaming" until a full reload.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-a",
+      body: "",
+      done: true,
+      replay: true,
+    });
+    flushSync();
+
+    expect(chat.isServerStreaming).toBe(false);
+    expect(chat.activity).toEqual({ kind: "idle" });
+    expect(chat.isBusy).toBe(false);
+  });
+
   it("keeps recovery busy but separate from streaming", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock);
