@@ -2277,6 +2277,55 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isBusy).toBe(false);
   });
 
+  it("keeps a stream tracked when an unobserved replay ends with replayComplete", async () => {
+    const mock = createMockAgent();
+    const chat = makeChat(mock);
+    await waitForChatInitialized(chat);
+
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-a",
+      body: JSON.stringify({ type: "start", messageId: "asst-a" }),
+      done: false,
+    });
+    flushSync();
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-b",
+      body: JSON.stringify({ type: "text-delta", id: "t1", delta: "done" }),
+      done: true,
+      continuation: true,
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(true);
+
+    // replayComplete with done: false means the replay caught up to a stream
+    // that is still live — the id must stay tracked so the composer stays
+    // busy until a real terminal frame arrives.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-a",
+      body: "",
+      done: false,
+      replay: true,
+      replayComplete: true,
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(true);
+    expect(chat.isBusy).toBe(true);
+
+    // The real terminal frame (live, not replay) settles it.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "stream-a",
+      body: "",
+      done: true,
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(false);
+    expect(chat.isBusy).toBe(false);
+  });
+
   it("keeps recovery busy but separate from streaming", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock);

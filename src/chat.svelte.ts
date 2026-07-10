@@ -1311,11 +1311,11 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
           // terminal frame must still settle its bookkeeping even though the
           // replayed content is ignored — otherwise the id stays in
           // #serverStreamIds and activity reports "streaming" forever.
-          if (event.done || event.error || event.replayComplete) {
+          // replayComplete is NOT terminal: the server sends it (done: false)
+          // when a replay catches up to a stream that is still live.
+          if (event.done || event.error) {
             this.#removeServerStream(event.streamId);
-            if (event.done || event.error) {
-              this.#clearRecoveryForTerminalStream(event.streamId);
-            }
+            this.#clearRecoveryForTerminalStream(event.streamId);
             this.#continuationStreamsSeeded.delete(event.streamId);
           }
           return;
