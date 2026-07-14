@@ -2315,6 +2315,22 @@ describe("createAgentChat — activity state", () => {
     });
     await secondResume;
 
+    // RESUMING may be repeated proactively on the same connection. A second
+    // ACK would request another full-buffer replay, so keep it generation-scoped.
+    replacementTarget.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: MessageType.CF_AGENT_STREAM_RESUMING,
+          id: requestId,
+        }),
+      }),
+    );
+    expect(
+      findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_ACK).filter(
+        (message) => message.id === requestId,
+      ),
+    ).toHaveLength(2);
+
     for (const body of [
       '{"type":"start","messageId":"assistant-resumed"}',
       '{"type":"text-start","id":"text-resumed"}',
