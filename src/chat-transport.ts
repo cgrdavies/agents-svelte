@@ -504,9 +504,6 @@ export class AgentChatTransport<
       const finishSession = session.finish;
       session.finish = (action, options) => {
         finishSession(action, options);
-        if (options?.emitLocalFinish === false && !options.ignoreRemaining) {
-          return;
-        }
         existingSession.finish(
           () => {
             if (options?.supersededError) {
@@ -583,13 +580,13 @@ export class AgentChatTransport<
   #handleStreamResuming(data: StreamResumingMessage<ChatMessage>): void {
     const requestId = data.id;
 
-    if (this.#pendingResume) {
-      this.#pendingReplayStreamIds.add(requestId);
-      this.#pendingResume.accept(requestId);
+    if (this.#activeStreams.has(requestId)) {
       return;
     }
 
-    if (this.#activeStreams.has(requestId)) {
+    if (this.#pendingResume) {
+      this.#pendingReplayStreamIds.add(requestId);
+      this.#pendingResume.accept(requestId);
       return;
     }
 

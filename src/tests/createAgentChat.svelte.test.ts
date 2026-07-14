@@ -2209,6 +2209,50 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isStreaming).toBe(false);
   });
 
+  it("keeps the original in-flight send when resume announces its request twice", async () => {
+    const mock = createMockAgent();
+    const chat = makeChat(mock);
+    await waitForChatInitialized(chat);
+
+    const request = chat.sendMessage({ text: "hello" });
+    void request.catch(() => {});
+
+    let requestId = "";
+    await vi.waitFor(() => {
+      requestId = String(findSent(mock, MessageType.CF_AGENT_USE_CHAT_REQUEST)?.id ?? "");
+      expect(requestId).not.toBe("");
+    });
+
+    for (let resumeCount = 1; resumeCount <= 2; resumeCount++) {
+      const resume = chat.resumeStream();
+      void resume.catch(() => {});
+      await vi.waitFor(() => {
+        expect(findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_REQUEST)).toHaveLength(
+          resumeCount,
+        );
+      });
+      mock.dispatchServerMessage({
+        type: MessageType.CF_AGENT_STREAM_RESUMING,
+        id: requestId,
+      });
+    }
+
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: requestId,
+      done: true,
+    });
+    flushSync();
+
+    await expectSettled(request);
+    expect(chat.isBusy).toBe(false);
+    expect(
+      findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_ACK).filter(
+        (message) => message.id === requestId,
+      ),
+    ).toHaveLength(0);
+  });
+
   it("activity and isStreaming reflect chat.status OR server stream", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock, { resume: true });
