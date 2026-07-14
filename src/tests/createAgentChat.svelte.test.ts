@@ -2209,8 +2209,13 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isStreaming).toBe(false);
   });
 
-  it("keeps the original in-flight send when resume announces its request twice", async () => {
+  it("keeps the original in-flight send through two refreshed-socket resume handshakes", async () => {
     const mock = createMockAgent();
+    let activeSocket = $state(mock.agent.socket);
+    Object.defineProperty(mock.agent, "socket", {
+      configurable: true,
+      get: () => activeSocket,
+    });
     const chat = makeChat(mock);
     await waitForChatInitialized(chat);
 
@@ -2223,34 +2228,170 @@ describe("createAgentChat — activity state", () => {
       expect(requestId).not.toBe("");
     });
 
-    for (let resumeCount = 1; resumeCount <= 2; resumeCount++) {
-      const resume = chat.resumeStream();
-      void resume.catch(() => {});
-      await vi.waitFor(() => {
-        expect(findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_REQUEST)).toHaveLength(
-          resumeCount,
-        );
-      });
+    const firstResume = chat.resumeStream();
+    await vi.waitFor(() => {
+      expect(findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_REQUEST)).toHaveLength(1);
+    });
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_STREAM_RESUMING,
+      id: requestId,
+    });
+    await vi.waitFor(() => {
+      expect(
+        findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_ACK).filter(
+          (message) => message.id === requestId,
+        ),
+      ).toHaveLength(1);
+    });
+    await firstResume;
+
+    // The scripted server does not release replay or live frames to the
+    // refreshed connection until the active request has been acknowledged.
+    for (const body of [
+      '{"type":"start","messageId":"assistant-resumed"}',
+      '{"type":"text-start","id":"text-resumed"}',
+      '{"type":"text-delta","id":"text-resumed","delta":"Hello"}',
+    ]) {
       mock.dispatchServerMessage({
-        type: MessageType.CF_AGENT_STREAM_RESUMING,
+        type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
         id: requestId,
+        body,
+        done: false,
+        replay: true,
       });
     }
-
     mock.dispatchServerMessage({
       type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
       id: requestId,
-      done: true,
+      done: false,
+      replay: true,
+      replayComplete: true,
     });
+    flushSync();
+
+    await vi.waitFor(() => {
+      expect(chat.messages.at(-1)?.parts).toContainEqual({
+        type: "text",
+        text: "Hello",
+        state: "streaming",
+      });
+    });
+    await expectNotSettled(request);
+
+    const replacementTarget = new EventTarget();
+    const replacementSend = vi.fn((payload: string) => {
+      mock.sent.push(payload);
+      mock.sentMessages.push(JSON.parse(payload) as Record<string, unknown>);
+    });
+    activeSocket = {
+      addEventListener: replacementTarget.addEventListener.bind(replacementTarget),
+      removeEventListener: replacementTarget.removeEventListener.bind(replacementTarget),
+      dispatchEvent: replacementTarget.dispatchEvent.bind(replacementTarget),
+      send: replacementSend,
+      close: vi.fn(),
+      readyState: 1,
+      _pkurl: "ws://localhost:3000/agents/chat/mock-room?generation=2",
+    } as unknown as typeof activeSocket;
+    flushSync();
+
+    const secondResume = chat.resumeStream();
+    await vi.waitFor(() => {
+      expect(findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_REQUEST)).toHaveLength(2);
+    });
+    replacementTarget.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: MessageType.CF_AGENT_STREAM_RESUMING,
+          id: requestId,
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(
+        findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_ACK).filter(
+          (message) => message.id === requestId,
+        ),
+      ).toHaveLength(2);
+    });
+    await secondResume;
+
+    for (const body of [
+      '{"type":"start","messageId":"assistant-resumed"}',
+      '{"type":"text-start","id":"text-resumed"}',
+      '{"type":"text-delta","id":"text-resumed","delta":"Hello"}',
+    ]) {
+      replacementTarget.dispatchEvent(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+            id: requestId,
+            body,
+            done: false,
+            replay: true,
+          }),
+        }),
+      );
+    }
+    replacementTarget.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+          id: requestId,
+          done: false,
+          replay: true,
+          replayComplete: true,
+        }),
+      }),
+    );
+    replacementTarget.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+          id: requestId,
+          body: '{"type":"text-delta","id":"text-resumed","delta":" world"}',
+          done: false,
+        }),
+      }),
+    );
+    flushSync();
+
+    await vi.waitFor(() => {
+      expect(chat.messages.at(-1)?.parts).toContainEqual({
+        type: "text",
+        text: "Hello world",
+        state: "streaming",
+      });
+    });
+    await expectNotSettled(request);
+
+    replacementTarget.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+          id: requestId,
+          body: '{"type":"text-end","id":"text-resumed"}',
+          done: false,
+        }),
+      }),
+    );
+    replacementTarget.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+          id: requestId,
+          done: true,
+        }),
+      }),
+    );
     flushSync();
 
     await expectSettled(request);
     expect(chat.isBusy).toBe(false);
-    expect(
-      findSentAll(mock, MessageType.CF_AGENT_STREAM_RESUME_ACK).filter(
-        (message) => message.id === requestId,
-      ),
-    ).toHaveLength(0);
+    expect(chat.messages.at(-1)?.parts).toContainEqual({
+      type: "text",
+      text: "Hello world",
+      state: "done",
+    });
   });
 
   it("activity and isStreaming reflect chat.status OR server stream", async () => {

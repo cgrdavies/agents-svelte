@@ -345,6 +345,7 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
         const socket = agent.socket;
         return socket
           ? {
+              identity: socket,
               send: (data: string) => socket.send(data),
               addEventListener: (type: string, listener: (event: MessageEvent) => void) =>
                 socket.addEventListener(type, listener as EventListener),

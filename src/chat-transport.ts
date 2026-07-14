@@ -9,6 +9,7 @@ import { nanoid } from "nanoid";
 import { MessageType, type OutgoingMessage } from "@cloudflare/ai-chat/types";
 
 interface AgentChatConnection {
+  identity: unknown;
   send: (data: string) => void;
   addEventListener: (type: string, listener: (event: MessageEvent) => void) => void;
   removeEventListener: (type: string, listener: (event: MessageEvent) => void) => void;
@@ -96,6 +97,7 @@ export class AgentChatTransport<
   readonly #ignoredRequestIds = new Set<string>();
   readonly #assistantMessageIds = new Map<string, string>();
   readonly #pendingReplayStreamIds = new Set<string>();
+  readonly #acknowledgedActiveStreamIds = new Set<string>();
 
   #pendingResume: PendingResume | null = null;
   #expectToolContinuation = false;
@@ -126,12 +128,13 @@ export class AgentChatTransport<
     }
 
     const connection = this.#getConnection();
-    if (connection === this.#startedConnection) {
+    if (connection?.identity === this.#startedConnection?.identity) {
       return;
     }
 
     this.#startedConnection?.removeEventListener("message", this.#handleMessage);
     this.#startedConnection = connection;
+    this.#acknowledgedActiveStreamIds.clear();
     connection?.addEventListener("message", this.#handleMessage);
   }
 
@@ -581,6 +584,12 @@ export class AgentChatTransport<
     const requestId = data.id;
 
     if (this.#activeStreams.has(requestId)) {
+      if (!this.#acknowledgedActiveStreamIds.has(requestId)) {
+        this.#pendingReplayStreamIds.add(requestId);
+        this.#sendResumeAck(requestId);
+        this.#acknowledgedActiveStreamIds.add(requestId);
+      }
+      this.#pendingResume?.none();
       return;
     }
 
