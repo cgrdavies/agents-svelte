@@ -1314,8 +1314,11 @@ export class AgentChat<M extends UIMessage = UIMessage> extends Chat<M> {
           // replayComplete is NOT terminal: the server sends it (done: false)
           // when a replay catches up to a stream that is still live.
           if (event.done || event.error) {
+            const wasTracked = this.#serverStreamIds.includes(event.streamId);
             this.#removeServerStream(event.streamId);
-            this.#clearRecoveryForTerminalStream(event.streamId);
+            if (wasTracked || this.#recoveringStreamIds.includes(event.streamId)) {
+              this.#clearRecoveryForTerminalStream(event.streamId);
+            }
             this.#continuationStreamsSeeded.delete(event.streamId);
           }
           return;

@@ -2277,6 +2277,32 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isBusy).toBe(false);
   });
 
+  it("keeps unidentified recovery active after an untracked replay terminal", async () => {
+    const mock = createMockAgent();
+    const chat = makeChat(mock);
+    await waitForChatInitialized(chat);
+
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_CHAT_RECOVERING,
+      recovering: true,
+    });
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "old-untracked-stream",
+      body: "",
+      done: true,
+      replay: true,
+    });
+    flushSync();
+
+    expect(chat.activity).toEqual({
+      kind: "recovering",
+      streamIds: [],
+      unidentified: true,
+    });
+    expect(chat.isBusy).toBe(true);
+  });
+
   it("keeps a stream tracked when an unobserved replay ends with replayComplete", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock);
