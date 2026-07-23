@@ -2235,30 +2235,32 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isStreaming).toBe(true);
   });
 
-  it("settles server-stream bookkeeping when a terminal frame arrives as an unobserved replay", async () => {
+  it("removes a stale tracked stream when its unobserved replay terminal arrives", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock);
     await waitForChatInitialized(chat);
 
-    // A live broadcast chunk tracks the stream without a broadcast-resume.
+    // Model post-disconnect client state: stream A remains in the multi-id
+    // bookkeeping while the single broadcast accumulator moves on because
+    // A's original terminal frame was missed.
     mock.dispatchServerMessage({
       type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
       id: "stream-a",
       body: JSON.stringify({ type: "start", messageId: "asst-a" }),
       done: false,
     });
-    flushSync();
-    expect(chat.isServerStreaming).toBe(true);
-
-    // An unrelated continuation turn resets the broadcast observation state.
     mock.dispatchServerMessage({
       type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
-      id: "stream-b",
-      body: JSON.stringify({ type: "text-delta", id: "t1", delta: "done" }),
+      id: "later-stream",
+      body: "",
       done: true,
-      continuation: true,
     });
     flushSync();
+    expect(chat.activity).toEqual({
+      kind: "streaming",
+      source: "server",
+      streamIds: ["stream-a"],
+    });
 
     // The tracked stream's terminal frame arrives late, as a replay the chat
     // is no longer observing. Its content is ignored, but the stream must
@@ -2277,7 +2279,7 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isBusy).toBe(false);
   });
 
-  it("keeps unidentified recovery active after a settled stream replays its terminal", async () => {
+  it("does not let a duplicate replay terminal clear a later unidentified recovery", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock);
     await waitForChatInitialized(chat);
@@ -2318,6 +2320,7 @@ describe("createAgentChat — activity state", () => {
     });
     flushSync();
 
+    expect(chat.isServerStreaming).toBe(false);
     expect(chat.activity).toEqual({
       kind: "recovering",
       streamIds: [],
@@ -2338,15 +2341,21 @@ describe("createAgentChat — activity state", () => {
       done: false,
     });
     flushSync();
+
+    // Reproduce the same defensive post-disconnect bookkeeping state as the
+    // terminal test above without implying overlapping upstream turns.
     mock.dispatchServerMessage({
       type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
-      id: "stream-b",
-      body: JSON.stringify({ type: "text-delta", id: "t1", delta: "done" }),
+      id: "later-stream",
+      body: "",
       done: true,
-      continuation: true,
     });
     flushSync();
-    expect(chat.isServerStreaming).toBe(true);
+    expect(chat.activity).toEqual({
+      kind: "streaming",
+      source: "server",
+      streamIds: ["stream-a"],
+    });
 
     // replayComplete with done: false means the replay caught up to a stream
     // that is still live — the id must stay tracked so the composer stays
