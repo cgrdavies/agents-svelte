@@ -2277,18 +2277,41 @@ describe("createAgentChat — activity state", () => {
     expect(chat.isBusy).toBe(false);
   });
 
-  it("keeps unidentified recovery active after an untracked replay terminal", async () => {
+  it("keeps unidentified recovery active after a settled stream replays its terminal", async () => {
     const mock = createMockAgent();
     const chat = makeChat(mock);
     await waitForChatInitialized(chat);
 
+    // Observe and fully settle an earlier stream so its id is no longer
+    // tracked when a duplicate terminal frame is delivered later.
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "settled-stream",
+      body: JSON.stringify({ type: "start", messageId: "settled-assistant" }),
+      done: false,
+    });
+    mock.dispatchServerMessage({
+      type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
+      id: "settled-stream",
+      body: "",
+      done: true,
+    });
+    flushSync();
+    expect(chat.isServerStreaming).toBe(false);
+
+    // A different recovery starts without a correlation id.
     mock.dispatchServerMessage({
       type: MessageType.CF_AGENT_CHAT_RECOVERING,
       recovering: true,
     });
+    flushSync();
+    expect(chat.isRecovering).toBe(true);
+
+    // A duplicate terminal replay for the already-settled stream must not
+    // clear the unrelated unidentified recovery.
     mock.dispatchServerMessage({
       type: MessageType.CF_AGENT_USE_CHAT_RESPONSE,
-      id: "old-untracked-stream",
+      id: "settled-stream",
       body: "",
       done: true,
       replay: true,
